@@ -14,7 +14,6 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-// 配置
 type Config struct {
 	DBUser     string `json:"db_user"`
 	DBPassword string `json:"db_password"`
