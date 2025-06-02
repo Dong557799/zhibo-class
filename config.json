@@ -1,0 +1,9 @@
+{
+  "db_user": "root",
+  "db_password": "helloDong777@",
+  "db_host": "localhost",
+  "db_port": 3306,
+  "db_name": "zhi_bo_class",
+  "livego_url": "http://localhost:8090",
+  "api_port": 8081
+}

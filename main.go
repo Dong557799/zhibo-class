@@ -36,6 +36,16 @@ type LiveSession struct {
 	PlayURLs  map[string]string `json:"play_urls,omitempty"`
 }
 
+// 题目结构体
+type Question struct {
+	ID       int      `json:"id"`
+	CourseID int      `json:"course_id"`
+	Type     string   `json:"type"` // 题目类型，如选择题、判断题
+	Content  string   `json:"content"`
+	Options  []string `json:"options,omitempty"` // 选择题选项
+	Answer   string   `json:"answer"`
+}
+
 var (
 	db     *sql.DB
 	config Config
@@ -106,6 +116,15 @@ func initRouter() *gin.Engine {
 
 	// 直播状态回调
 	r.POST("/api/live/status", handleLiveStatusCallback)
+
+	// 在线答题管理
+	questionGroup := r.Group("/api/question")
+	{
+		questionGroup.POST("/create", createQuestion)
+		questionGroup.GET("/push/:course_id/:question_id", pushQuestion)
+		questionGroup.POST("/submit", submitAnswer)
+		questionGroup.GET("/result/:question_id", getResult)
+	}
 
 	return r
 }
@@ -336,4 +355,138 @@ func handleLiveStatusCallback(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Callback received"})
+}
+
+// 创建题目
+func createQuestion(c *gin.Context) {
+	var question Question
+	if err := c.ShouldBindJSON(&question); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 在数据库中创建题目
+	result, err := db.Exec(`
+		INSERT INTO questions (course_id, type, content, options, answer)
+		VALUES (?, ?, ?, ?, ?)
+	`, question.CourseID, question.Type, question.Content, strings.Join(question.Options, ","), question.Answer)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create question"})
+		return
+	}
+
+	// 获取新创建的题目 ID
+	id, err := result.LastInsertId()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get question ID"})
+		return
+	}
+
+	question.ID = int(id)
+	c.JSON(http.StatusCreated, question)
+}
+
+// 推送题目
+func pushQuestion(c *gin.Context) {
+	courseID := c.Param("course_id")
+	questionID := c.Param("question_id")
+
+	// 获取题目信息
+	var question Question
+	err := db.QueryRow(`
+		SELECT id, course_id, type, content, options, answer
+		FROM questions
+		WHERE id = ? AND course_id = ?
+	`, questionID, courseID).Scan(
+		&question.ID,
+		&question.CourseID,
+		&question.Type,
+		&question.Content,
+		&question.Options,
+		&question.Answer,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Question not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get question"})
+		}
+		return
+	}
+
+	// 推送题目到学生端（使用 WebSocket 或其他实时通信技术）
+	// 这里只是简单返回题目信息
+	c.JSON(http.StatusOK, question)
+}
+
+// 提交答案
+func submitAnswer(c *gin.Context) {
+	var answer struct {
+		QuestionID int    `json:"question_id" binding:"required"`
+		StudentID  int    `json:"student_id" binding:"required"`
+		Answer     string `json:"answer" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&answer); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 在数据库中存储答案
+	_, err := db.Exec(`
+		INSERT INTO answers (question_id, student_id, answer)
+		VALUES (?, ?, ?)
+	`, answer.QuestionID, answer.StudentID, answer.Answer)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to submit answer"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Answer submitted successfully"})
+}
+
+// 统计结果
+func getResult(c *gin.Context) {
+	questionID := c.Param("question_id")
+
+	// 获取正确答案
+	var correctAnswer string
+	err := db.QueryRow(`
+		SELECT answer
+		FROM questions
+		WHERE id = ?
+	`, questionID).Scan(&correctAnswer)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Question not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get correct answer"})
+		}
+		return
+	}
+
+	// 统计答案
+	var totalCount int
+	var correctCount int
+	err = db.QueryRow(`
+		SELECT COUNT(*), SUM(CASE WHEN answer = ? THEN 1 ELSE 0 END)
+		FROM answers
+		WHERE question_id = ?
+	`, correctAnswer, questionID).Scan(&totalCount, &correctCount)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get result"})
+		return
+	}
+
+	result := map[string]int{
+		"total_count":   totalCount,
+		"correct_count": correctCount,
+	}
+
+	c.JSON(http.StatusOK, result)
 }
